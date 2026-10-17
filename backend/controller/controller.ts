@@ -80,10 +80,10 @@ export async function CreateJob(req:Request, res: Response) {
         await client.query("BEGIN");
         created = await client.query(
             `INSERT INTO jobs (name, job_type, payload, priority, idempotency_key)
-            VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+            VALUES ($1, $2, $3::jsonb, $4, $5)
             ON CONFLICT (idempotency_key) DO NOTHING
             RETURNING *`,
-            [name.trim(), jobType, JSON.stringify(payload), priority, maxRetries, idempotencyKey],
+            [name.trim(), jobType, JSON.stringify(payload), priority, idempotencyKey],
         );
 
         if (created.rows[0]) {
@@ -197,6 +197,8 @@ export async function GetAllJobs(req:Request, res: Response) {
         const rawLimit = req.query.limit ?? "20";
         const page = Number(rawPage);
         const limit = Number(rawLimit);
+
+        console.log("request coming")
 
         if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
             res.status(400).json({ error: "page must be positive and limit must be between 1 and 100." });

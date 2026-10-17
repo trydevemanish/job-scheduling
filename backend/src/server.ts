@@ -5,9 +5,19 @@ import { PORT } from "../shared/config.js";
 import { connectRabbit } from "../shared/rabbit.js";
 import { CancelJobs, CreateJob, GetAllJobs, GetJobsById } from "../controller/controller.js";
 import { attachWebSockets } from "../shared/websocket.js";
+import cors, {type CorsOptions } from 'cors'
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+
+const corsOptions: CorsOptions = {
+  origin: "http://localhost:5173",
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+}
+
+app.use(cors(corsOptions))
 
 /**-------------------------------------------- */
 

@@ -37,7 +37,7 @@ const handlers: Record<JobType, (payload: Record<string, unknown>) => Promise<un
 /**---------------------------------------------------------- */
 async function consumeEvent() {
     const ch = getChannel();
-    await ch.prefetch(1)
+    await ch.prefetch(3)
     
     await ch.consume(QUEUE, async(msg) => {
         if(!msg) return
@@ -87,11 +87,11 @@ async function consumeEvent() {
             try {
                 const result = await handlers[job.job_type](job.payload);
                 const completed = await pool.query(
-                    `UPDATE jobs SET status = 'completed', result = $2::jsonb,
+                    `UPDATE jobs SET status = 'completed',
                     completed_at = NOW(), updated_at = NOW(), failure_reason = NULL
                     WHERE id = $1 AND status = 'processing'
                     RETURNING id`,
-                    [job.id, JSON.stringify(result)],
+                    [job.id],
                 );
 
                 if (completed.rows[0]) {

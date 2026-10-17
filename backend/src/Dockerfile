@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 4000
 
-CMD ["npm", "run", "dev:src"]
+CMD ["npm", "run", "dev:api"]

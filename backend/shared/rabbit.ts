@@ -26,12 +26,12 @@ export async function connectRabbit(){
       QUEUE,
       {
           durable: true,
-          arguments: { 'x-queue-type': 'quorum'}
+          arguments: { 'x-queue-type': 'classic'}
       }
   )
 
   await channel.assertQueue(RETRY_QUEUE, {durable: true, arguments: {
-      'x-queue-type': 'quorum',
+      'x-queue-type': 'classic',
       'x-message-ttl': 5000,                  
       'x-dead-letter-exchange': '',           
       'x-dead-letter-routing-key': QUEUE,     
@@ -39,7 +39,7 @@ export async function connectRabbit(){
   },
   })
 
-  await channel.assertQueue(DLQ, { durable: true, arguments: { 'x-queue-type': 'quorum' } })
+  await channel.assertQueue(DLQ, { durable: true, arguments: { 'x-queue-type': 'classic' } })
   console.log('RabbitMq Connected')
 }
 
