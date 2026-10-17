@@ -1,6 +1,7 @@
 import type { JobType } from "../shared/job-types.js";
 import { pool } from "../shared/postgres.js";
 import { QUEUE, RETRY_QUEUE, DLQ, getChannel, connectRabbit } from "../shared/rabbit.js";
+import { publishJobStatus } from "../shared/job-status-events.js";
 
 const MAX_ATTEMPTS = 3
 
@@ -12,6 +13,8 @@ function isJobMessage(value: unknown): value is JobMessage {
     && "jobId" in value
     && typeof value.jobId === "string";
 }
+
+
 type JobRow = {
   id: string;
   job_type: JobType;
@@ -31,6 +34,7 @@ const handlers: Record<JobType, (payload: Record<string, unknown>) => Promise<un
   })
 };
 
+/**---------------------------------------------------------- */
 async function consumeEvent() {
     const ch = getChannel();
     await ch.prefetch(1)
@@ -67,10 +71,18 @@ async function consumeEvent() {
             );
 
             const job = claimed.rows[0];
+
             if (!job) {
                 ch.ack(msg);
                 return;
             }
+
+            await publishJobStatus({
+                jobId: String(job.id),
+                status: "processing",
+                retryCount: job.retry_count,
+                updatedAt: new Date().toISOString(),
+            });
 
             try {
                 const result = await handlers[job.job_type](job.payload);
@@ -87,14 +99,21 @@ async function consumeEvent() {
                         "INSERT INTO job_events (job_id, event_type) VALUES ($1, 'completed')",
                         [job.id],
                     );
+
+                    await publishJobStatus({
+                        jobId: String(job.id),
+                        status: "completed",
+                        retryCount: job.retry_count,
+                        updatedAt: new Date().toISOString(),
+                    });
                 }
 
                 ch.ack(msg);
             } catch (error) {
                 const failureReason = error instanceof Error ? error.message : String(error);
-                const retry = await pool.query<{ retry_count: number; status: string }>(
+                const retry = await pool.query<{ retry_count: number; status: "pending" | "failed"; }>(
                     `UPDATE jobs
-                    SET retry_count = CASE WHEN retry_count < ${MAX_ATTEMPTS} THEN retry_count + 1 ELSE retry_count END,
+                    SET retry_count = retry_count + 1,
                         status = CASE WHEN retry_count < ${MAX_ATTEMPTS} THEN 'pending' ELSE 'failed' END,
                         failure_reason = $2, updated_at = NOW(),
                         completed_at = CASE WHEN retry_count >= ${MAX_ATTEMPTS} THEN NOW() ELSE completed_at END
@@ -115,14 +134,32 @@ async function consumeEvent() {
                 );
 
                 if (updated.status === "failed") {
-                    ch.sendToQueue(DLQ, msg.content, { persistent: true });
+                    ch.sendToQueue(DLQ, msg.content, { persistent: true, headers: {
+                        ...msg.properties.headers,
+                        "x-attempt": updated.retry_count,
+                        "x-failure-reason": failureReason,
+                    }, });
                 } else {
-                    ch.sendToQueue(QUEUE, msg.content, {
+                    ch.sendToQueue(RETRY_QUEUE, msg.content, {
                         persistent: true,
                         priority: msg.properties.priority,
+                        headers: {
+                            ...msg.properties.headers,
+                            "x-attempt": updated.retry_count,
+                        },
                     });
                 }
+
                 await ch.waitForConfirms();
+
+                await publishJobStatus({
+                    jobId: String(job.id),
+                    status: updated.status,
+                    retryCount: updated.retry_count,
+                    failureReason,
+                    updatedAt: new Date().toISOString(),
+                });
+
                 ch.ack(msg);
             }
         } catch (error) {

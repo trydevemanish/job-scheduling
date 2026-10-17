@@ -3,6 +3,7 @@ import { jobTypes } from "../shared/job-types.js";
 import { redis } from "../shared/redis.js";
 import { pool } from "../shared/postgres.js";
 import { statuses, type JobStatus } from "../shared/job-status.js";
+import { publishJob } from "../shared/rabbit.js";
 
 /** Useful function --------------------------------- */
 
@@ -78,32 +79,32 @@ export async function CreateJob(req:Request, res: Response) {
     try {
         await client.query("BEGIN");
         created = await client.query(
-        `INSERT INTO jobs (name, job_type, payload, priority, idempotency_key)
-        VALUES ($1, $2, $3::jsonb, $4, $5, $6)
-        ON CONFLICT (idempotency_key) DO NOTHING
-        RETURNING *`,
-        [name.trim(), jobType, JSON.stringify(payload), priority, maxRetries, redisKey],
+            `INSERT INTO jobs (name, job_type, payload, priority, idempotency_key)
+            VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING *`,
+            [name.trim(), jobType, JSON.stringify(payload), priority, maxRetries, idempotencyKey],
         );
 
         if (created.rows[0]) {
-        await client.query(
-            `INSERT INTO job_events (job_id, event_type)
-            VALUES ($1, 'created')`,
-            [created.rows[0].id],
-        );
+            await client.query(
+                `INSERT INTO job_events (job_id, event_type)
+                VALUES ($1, 'created')`,
+                [created.rows[0].id],
+                );
         } else {
-        const result = await client.query(
-            `SELECT * FROM jobs WHERE idempotency_key = $1`,
-            [redisKey],
-        );
-
-        existingJob = result.rows[0] ?? null;
-
-        if (!existingJob) {
-            throw new Error(
-            "Conflicting idempotency key, but the job was not found.",
+            const result = await client.query(
+                `SELECT * FROM jobs WHERE idempotency_key = $1`,
+                [idempotencyKey],
             );
-        }
+
+            existingJob = result.rows[0] ?? null;
+
+            if (!existingJob) {
+                throw new Error(
+                "Conflicting idempotency key, but the job was not found.",
+                );
+            }
         }
 
         await client.query("COMMIT");
@@ -127,7 +128,7 @@ export async function CreateJob(req:Request, res: Response) {
 
     if (redisKey) {
         try {
-        await redis.set( redisKey, JSON.stringify({ job }), "EX", IDEMPOTENCY_TTL_SECONDS);
+            await redis.set( redisKey, JSON.stringify({ job }), "EX", IDEMPOTENCY_TTL_SECONDS);
         } catch (error) {
         console.error("Redis idempotency cache failed:", error);
         }
@@ -137,8 +138,57 @@ export async function CreateJob(req:Request, res: Response) {
         res.status(200).json(responseBody);
         return;
     }
+    else {
+        await publishJob(
+            String(job.id),
+            job.priority,
+        );
+    }
 
     res.status(201).json(responseBody);
+}
+
+export async function GetJobsById(req:Request, res: Response) {
+    try {
+        const result = await pool.query(`SELECT jobs.*, ${jobDurationSql} FROM jobs WHERE id = $1`, [req.params.id]);
+        if (!result.rows[0]) {
+            res.status(404).json({ error: "Job not found." });
+            return;
+        }
+        res.json({ job: result.rows[0] });
+    } catch (error) {
+        return res.status(500).json({ })
+    }
+}
+
+export async function CancelJobs(req:Request, res: Response) {
+    try {
+        const result = await pool.query(
+            `UPDATE jobs
+            SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
+            WHERE id = $1 AND status IN ('pending', 'processing')
+            RETURNING *`,
+            [req.params.id],
+        );
+
+        if (result.rows[0]) {
+            await pool.query(
+            "INSERT INTO job_events (job_id, event_type) VALUES ($1, 'cancelled')",
+            [req.params.id],
+            );
+            res.json({ job: result.rows[0] });
+            return;
+        }
+
+        const existing = await pool.query("SELECT status FROM jobs WHERE id = $1", [req.params.id]);
+        if (!existing.rows[0]) {
+            res.status(404).json({ error: "Job not found." });
+            return;
+        }
+        res.status(409).json({ error: `Cannot cancel a ${existing.rows[0].status} job.` });
+    } catch (error) {
+        return res.status(500).json({ })
+    }
 }
 
 export async function GetAllJobs(req:Request, res: Response) {
@@ -202,48 +252,5 @@ export async function GetAllJobs(req:Request, res: Response) {
         res.json({ jobs: rows.rows, page, limit, total: count.rows[0].total });
     } catch (err : any) {
         return res.status(500).json({message: err})
-    }
-}
-
-export async function GetJobsById(req:Request, res: Response) {
-    try {
-        const result = await pool.query(`SELECT jobs.*, ${jobDurationSql} FROM jobs WHERE id = $1`, [req.params.id]);
-        if (!result.rows[0]) {
-            res.status(404).json({ error: "Job not found." });
-            return;
-        }
-        res.json({ job: result.rows[0] });
-    } catch (error) {
-        return res.status(500).json({ })
-    }
-}
-
-export async function CancelJobs(req:Request, res: Response) {
-    try {
-        const result = await pool.query(
-            `UPDATE jobs
-            SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
-            WHERE id = $1 AND status IN ('pending', 'processing')
-            RETURNING *`,
-            [req.params.id],
-        );
-
-        if (result.rows[0]) {
-            await pool.query(
-            "INSERT INTO job_events (job_id, event_type) VALUES ($1, 'cancelled')",
-            [req.params.id],
-            );
-            res.json({ job: result.rows[0] });
-            return;
-        }
-
-        const existing = await pool.query("SELECT status FROM jobs WHERE id = $1", [req.params.id]);
-        if (!existing.rows[0]) {
-            res.status(404).json({ error: "Job not found." });
-            return;
-        }
-        res.status(409).json({ error: `Cannot cancel a ${existing.rows[0].status} job.` });
-    } catch (error) {
-        return res.status(500).json({ })
     }
 }

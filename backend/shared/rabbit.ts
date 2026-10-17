@@ -32,9 +32,10 @@ export async function connectRabbit(){
 
   await channel.assertQueue(RETRY_QUEUE, {durable: true, arguments: {
       'x-queue-type': 'quorum',
-      'x-message-ttl': 5000,                  // wait 5s
-      'x-dead-letter-exchange': '',           // default exchange...
-      'x-dead-letter-routing-key': QUEUE,     // ...routes back to the main queue
+      'x-message-ttl': 5000,                  
+      'x-dead-letter-exchange': '',           
+      'x-dead-letter-routing-key': QUEUE,     
+      "x-max-priority": 5,
   },
   })
 
@@ -47,4 +48,19 @@ export function getChannel(){
     return channel
 }
 
+
+export async function publishJob( jobId: string, priority: number) {
+  const ch = getChannel();
+
+  ch.sendToQueue(
+    QUEUE,
+    Buffer.from(JSON.stringify({ jobId })),
+    {
+      persistent: true,
+      priority: 6 - priority,
+    },
+  );
+
+  await ch.waitForConfirms();
+}
 

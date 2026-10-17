@@ -1,8 +1,10 @@
 import express from "express";
+import { createServer } from "node:http";
 import { pool } from "../shared/postgres.js";
 import { PORT } from "../shared/config.js";
 import { connectRabbit } from "../shared/rabbit.js";
 import { CancelJobs, CreateJob, GetAllJobs, GetJobsById } from "../controller/controller.js";
+import { attachWebSockets } from "../shared/websocket.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -18,10 +20,20 @@ app.post("/api/jobs/:id/cancel", CancelJobs)
 
 /**-------------------------------------------- */
 
+const server = createServer(app);
+
 async function start() {
   await pool.query("SELECT 1");
   await connectRabbit()
-  app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+  await attachWebSockets(server);
+ 
+  server.listen(PORT, () => {
+    console.log(`Server started on port ${PORT}`);
+  });
 }
 
-start()
+start().catch((error) => {
+  console.error("Server startup failed:", error);
+  process.exit(1);
+});
+
