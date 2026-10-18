@@ -180,5 +180,5 @@ async function start() {
 
 start().catch(err => {
     console.error('Worker failed to start:', err)
-    process.exit(1)         // exit so Docker restarts it instead of hiding the crash
+    process.exit(1)    
 })
